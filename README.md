@@ -14,6 +14,7 @@ short_description: 'Image Generation : Gen V'
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
 
+Aka -- MidJour AI in HF
 ## GITLFS
 
     # Make sure you have git-lfs installed (https://git-lfs.com)
