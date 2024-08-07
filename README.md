@@ -37,3 +37,64 @@ Check out the configuration reference at https://huggingface.co/docs/hub/spaces-
     GIT_LFS_SKIP_SMUDGE=1 git clone git@hf.co:spaces/prithivMLmods/GEN-VISION
 
 ![alt text](assets/genv.png)
+
+-------------------------------------------------------------------------------------------------------------
+
+## Colab ⚡
+
+Installing all the requirements ( requirements.txt )
+
+![alt text](Colab/colab1.png)
+
+Authentication & Huggingface Login
+
+![alt text](Colab/colab2.png)
+
+Attached Models Loaded
+
+![alt text](Colab/colab3.png)
+
+Loading LoRA Models
+
+![alt text](Colab/colab4.png)
+
+Launched in Gradio
+
+![alt text](Colab/colab5.png)
+
+Running Sample
+
+![alt text](Colab/colab6.png)
+
+Results #prompt : Hoodie: Front view, capture a urban style, Superman Hoodie, technical materials, fabric small point label on text Blue theory, the design is minimal, with a raised collar, fabric is a Light yellow, low angle to capture the Hoodies form and detailing, f/5.6 to focus on the hoodies craftsmanship, solid grey background, studio light setting, with batman logo in the chest region of the t-shirt
+
+
+![alt text](Colab/colab7.png)
+
+
+.
+
+.
+
+.
+
+## Dependencies
+
+| Package        | Version       |
+|----------------|---------------|
+| `diffusers`    | latest        |
+| `torch`        | latest        |
+| `torchvision`  | latest        |
+| `pipeline`     | latest        |
+| `transformers` | 4.43.3        |
+| `accelerate`   | latest        |
+| `safetensors`  | latest        |
+| `spaces`       | latest        |
+| `peft`         | latest        |
+| `gradio`       | latest        |
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
