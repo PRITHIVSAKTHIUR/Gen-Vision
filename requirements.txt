@@ -1,0 +1,10 @@
+diffusers
+torch
+torchvision
+pipeline
+transformers==4.43.3 
+accelerate
+safetensors
+spaces
+peft
+gradio
