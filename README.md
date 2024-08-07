@@ -46,7 +46,7 @@ Installing all the requirements ( requirements.txt )
 
 ![alt text](Colab/colab1.png)
 
-Authentication & Huggingface Login
+Authentication & Huggingface Login ( Past your Access token from HF )
 
 ![alt text](Colab/colab2.png)
 
