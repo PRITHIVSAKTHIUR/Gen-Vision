@@ -14,7 +14,7 @@ short_description: 'Image Generation : Gen V'
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
 
-## ⚡Aka -- MidJour AI in HF
+## ⚡Aka -- [Stable Imagine](https://huggingface.co/spaces/prithivMLmods/STABLE-IMAGINE) in HF
 
 ## GITLFS
 
