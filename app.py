@@ -1,13 +1,3 @@
-#!/usr/bin/env python
-#patch 1.0()
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# ...
 import os
 import random
 import uuid
@@ -18,10 +8,6 @@ from PIL import Image
 import spaces
 import torch
 from diffusers import StableDiffusionXLPipeline, EulerAncestralDiscreteScheduler
-
-DESCRIPTIONz= """## GEN V ⚡
-
-"""
 
 def save_image(img):
     unique_name = str(uuid.uuid4()) + ".png"
@@ -34,10 +20,6 @@ def randomize_seed_fn(seed: int, randomize_seed: bool) -> int:
     return seed
 
 MAX_SEED = np.iinfo(np.int32).max
-
-if not torch.cuda.is_available():
-    DESCRIPTIONz += "\n<p>⚠️Running on CPU, This may not work on CPU. If it runs for an extended time or if you encounter errors, try running it on a GPU by duplicating the space using @spaces.GPU(). +import spaces.📍</p>"
-
 USE_TORCH_COMPILE = 0
 ENABLE_CPU_OFFLOAD = 0
 
@@ -147,16 +129,21 @@ def generate(
     return image_paths, seed
 
 examples = [
-    "Realism: Man in the style of dark beige and brown, uhd image, youthful protagonists, nonrepresentational ",
-    "Pixar: A young man with light brown wavy hair and light brown eyes sitting in an armchair and looking directly at the camera, pixar style, disney pixar, office background, ultra detailed, 1 man",
-    "Hoodie: Front view, capture a urban style, Superman Hoodie, technical materials, fabric small point label on text Blue theory, the design is minimal, with a raised collar, fabric is a Light yellow, low angle to capture the Hoodies form and detailing, f/5.6 to focus on the hoodies craftsmanship, solid grey background, studio light setting, with batman logo in the chest region of the t-shirt",
+    "realism, man in the style of dark beige and brown, uhd image, youthful protagonists, nonrepresentational",
+    "pixar, a young man with light brown wavy hair and light brown eyes sitting in an armchair and looking directly at the camera, pixar style, disney pixar, office background",
+    "hoodie, front view, capture a urban style, superman hoodie, technical materials, fabric small point label on text blue theory, with a raised collar, fabric is a light yellow, low angle to capture the hoodies form and detailing, f/5.6 to focus on the hoodies craftsmanship, solid grey background, studio light setting, with batman logo.",
 ]
 
+
 css = '''
-.gradio-container{max-width: 545px !important}
+.gradio-container{max-width: 888px !important}
 h1{text-align:center}
-footer {
-    visibility: hidden
+.submit-btn {
+    background-color: #ecde2c  !important;
+    color: white !important;
+}
+.submit-btn:hover {
+    background-color: #ffec00  !important;
 }
 '''
 
@@ -175,9 +162,8 @@ def load_predefined_images():
     return predefined_images
 
 with gr.Blocks(css=css, theme="bethecloud/storj_theme") as demo:
-    gr.Markdown(DESCRIPTIONz)  
-    with gr.Group():
-        with gr.Row():
+    with gr.Row():
+        with gr.Column(scale=1):
             prompt = gr.Text(
                 label="Prompt",
                 show_label=False,
@@ -185,84 +171,92 @@ with gr.Blocks(css=css, theme="bethecloud/storj_theme") as demo:
                 placeholder="Enter your prompt with resp. tag!",
                 container=False,
             )
-            run_button = gr.Button("Run", scale=0)
-        result = gr.Gallery(label="Result", columns=1, preview=True, show_label=False)
-    
-    with gr.Accordion("Advanced options", open=False, visible=False):
-        use_negative_prompt = gr.Checkbox(label="Use negative prompt", value=True)
-        negative_prompt = gr.Text(
-            label="Negative prompt",
-            lines=4,
-            max_lines=6,
-            value="(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation",
-            placeholder="Enter a negative prompt",
-            visible=True,
-        )
-        seed = gr.Slider(
-            label="Seed",
-            minimum=0,
-            maximum=MAX_SEED,
-            step=1,
-            value=0,
-            visible=True
-        )
-        randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
-        
-        with gr.Row(visible=True):
-            width = gr.Slider(
-                label="Width",
-                minimum=512,
-                maximum=2048,
-                step=8,
-                value=1024,
+            run_button = gr.Button("Generate  as  (1024 x 1024)🎃", scale=0, elem_classes="submit-btn")
+
+            with gr.Row(visible=True):
+                model_choice = gr.Dropdown(
+                    label="LoRA Selection",
+                    choices=list(LORA_OPTIONS.keys()),
+                    value="Realism (face/character)👦🏻")
+            
+            with gr.Accordion("Advanced options", open=True):
+                use_negative_prompt = gr.Checkbox(label="Use negative prompt", value=True, visible=True)
+                negative_prompt = gr.Text(
+                    label="Negative prompt",
+                    lines=4,
+                    max_lines=6,
+                    value="(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation",
+                    placeholder="Enter a negative prompt",
+                    visible=True,
+                )
+                with gr.Row():
+                    seed = gr.Slider(
+                        label="Seed",
+                        minimum=0,
+                        maximum=MAX_SEED,
+                        step=1,
+                        value=0,
+                        visible=True
+                    )
+                    randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
+
+                with gr.Row(visible=True):
+                    width = gr.Slider(
+                        label="Width",
+                        minimum=512,
+                        maximum=2048,
+                        step=8,
+                        value=1024,
+                    )
+                    height = gr.Slider(
+                        label="Height",
+                        minimum=512,
+                        maximum=2048,
+                        step=8,
+                        value=1024,
+                    )
+                    
+                guidance_scale = gr.Slider(
+                    label="Guidance Scale",
+                    minimum=0.1,
+                    maximum=20.0,
+                    step=0.1,
+                    value=3.0,
+                )
+
+                style_selection = gr.Radio(
+                    show_label=True,
+                    container=True,
+                    interactive=True,
+                    choices=STYLE_NAMES,
+                    value=DEFAULT_STYLE_NAME,
+                    label="Quality Style",
+                )
+
+        with gr.Column(scale=2):
+            result = gr.Gallery(label="Result", columns=1, preview=True, show_label=False)
+
+            gr.Examples(
+                examples=examples,
+                inputs=prompt,
+                outputs=[result, seed],
+                fn=generate,
+                cache_examples=False,
             )
-            height = gr.Slider(
-                label="Height",
-                minimum=512,
-                maximum=2048,
-                step=8,
-                value=1024,
-            )
-        
-        with gr.Row():
-            guidance_scale = gr.Slider(
-                label="Guidance Scale",
-                minimum=0.1,
-                maximum=20.0,
-                step=0.1,
-                value=3.0,
+            
+            predefined_gallery = gr.Gallery(
+                label="Image Gallery",
+                columns=3,
+                show_label=False,
+                value=load_predefined_images()
             )
 
-        style_selection = gr.Radio(
-            show_label=True,
-            container=True,
-            interactive=True,
-            choices=STYLE_NAMES,
-            value=DEFAULT_STYLE_NAME,
-            label="Quality Style",
+        use_negative_prompt.change(
+            fn=lambda x: gr.update(visible=x),
+            inputs=use_negative_prompt,
+            outputs=negative_prompt,
+            api_name=False,
         )
-
-    with gr.Row(visible=True):
-        model_choice = gr.Dropdown(
-            label="LoRA Selection",
-            choices=list(LORA_OPTIONS.keys()),
-            value="Realism (face/character)👦🏻"
-        )
-
-    gr.Examples(
-        examples=examples,
-        inputs=prompt,
-        outputs=[result, seed],
-        fn=generate,
-        cache_examples=False,
-    )
-
-    use_negative_prompt.change(
-        fn=lambda x: gr.update(visible=x),
-        inputs=use_negative_prompt,
-        outputs=negative_prompt,
-        api_name=False,
-    )
 
     gr.on(
         triggers=[
@@ -287,15 +281,5 @@ with gr.Blocks(css=css, theme="bethecloud/storj_theme") as demo:
         api_name="run",
     )
 
-
-    with gr.Column(scale=3):
-        gr.Markdown("### Image Gallery")
-        predefined_gallery = gr.Gallery(label="Image Gallery", columns=3, show_label=False, value=load_predefined_images()) 
-        
-    gr.Markdown("⚡Models used in the playground [[Lightning]](https://huggingface.co/SG161222/RealVisXL_V4.0_Lightning) & LoRA from [[LoRA]](https://huggingface.co/collections/prithivMLmods/dev-models-667803a6d5ac75b59110e527) for image generation. The specific LoRA in the space that requires appropriate trigger words brings good results. The model is still in the training phase. This is not the final version and may contain artifacts and perform poorly in some cases.")
-    gr.Markdown("⚡This is the demo space for generating images using Stable Diffusion with quality styles, different LoRA models and types. Try the sample prompts to generate higher quality images. Try the sample prompts for generating higher quality images.<a href='https://huggingface.co/spaces/prithivMLmods/Top-Prompt-Collection' target='_blank'>Try prompts</a>.")
-    gr.Markdown("⚡Make sure that the prompts passed meet the trigger word conditions and are well-detailed. This space is for educational purposes only; using it productively is meant for your own knowledge.")
-    gr.Markdown("⚠️ users are accountable for the content they generate and are responsible for ensuring it meets appropriate ethical standards.")
-    
 if __name__ == "__main__":
     demo.queue(max_size=30).launch()
