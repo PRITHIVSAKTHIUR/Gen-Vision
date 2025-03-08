@@ -1,15 +1,166 @@
 import os
 import random
 import uuid
-from typing import Tuple
+import json
+import time
+import asyncio
+import re
+from threading import Thread
+
 import gradio as gr
-import numpy as np
-from PIL import Image
 import spaces
 import torch
+import numpy as np
+from PIL import Image
+import edge_tts
+
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TextIteratorStreamer,
+    Qwen2VLForConditionalGeneration,
+    AutoProcessor,
+)
+from transformers.image_utils import load_image
 from diffusers import StableDiffusionXLPipeline, EulerAncestralDiscreteScheduler
 
-def save_image(img):
+DESCRIPTION = """
+# Gen Vision 🎃
+"""
+
+css = '''
+h1 {
+  text-align: center;
+  display: block;
+}
+
+#duplicate-button {
+  margin: auto;
+  color: #fff;
+  background: #1565c0;
+  border-radius: 100vh;
+}
+'''
+
+MAX_MAX_NEW_TOKENS = 2048
+DEFAULT_MAX_NEW_TOKENS = 1024
+MAX_INPUT_TOKEN_LENGTH = int(os.getenv("MAX_INPUT_TOKEN_LENGTH", "4096"))
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# -----------------------
+# Progress Bar Helper
+# -----------------------
+def progress_bar_html(label: str) -> str:
+    """
+    Returns an HTML snippet for a thin progress bar with a label.
+    The progress bar is styled as a dark red animated bar.
+    """
+    return f'''
+<div style="display: flex; align-items: center;">
+    <span style="margin-right: 10px; font-size: 14px;">{label}</span>
+    <div style="width: 110px; height: 5px; background-color: #DDA0DD; border-radius: 2px; overflow: hidden;">
+        <div style="width: 100%; height: 100%; background-color: #FF00FF; animation: loading 1.5s linear infinite;"></div>
+    </div>
+</div>
+<style>
+@keyframes loading {{
+    0% {{ transform: translateX(-100%); }}
+    100% {{ transform: translateX(100%); }}
+}}
+</style>
+    '''
+
+# -----------------------
+# Text Generation Setup
+# -----------------------
+model_id = "prithivMLmods/FastThink-0.5B-Tiny"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    device_map="auto",
+    torch_dtype=torch.bfloat16,
+)
+model.eval()
+
+TTS_VOICES = [
+    "en-US-JennyNeural",  # @tts1
+    "en-US-GuyNeural",    # @tts2
+]
+
+# -----------------------
+# Multimodal OCR Setup
+# -----------------------
+MODEL_ID = "prithivMLmods/Qwen2-VL-OCR-2B-Instruct" 
+processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+model_m = Qwen2VLForConditionalGeneration.from_pretrained(
+    MODEL_ID,
+    trust_remote_code=True,
+    torch_dtype=torch.float16
+).to("cuda").eval()
+
+async def text_to_speech(text: str, voice: str, output_file="output.mp3"):
+    """Convert text to speech using Edge TTS and save as MP3"""
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(output_file)
+    return output_file
+
+def clean_chat_history(chat_history):
+    """
+    Filter out any chat entries whose "content" is not a string.
+    """
+    cleaned = []
+    for msg in chat_history:
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+            cleaned.append(msg)
+    return cleaned
+
+# -----------------------
+# Stable Diffusion Image Generation Setup
+# -----------------------
+
+MAX_SEED = np.iinfo(np.int32).max
+USE_TORCH_COMPILE = False
+ENABLE_CPU_OFFLOAD = False
+
+if torch.cuda.is_available():
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        "SG161222/RealVisXL_V4.0_Lightning",
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    )
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+    
+    # LoRA options with one example for each.
+    LORA_OPTIONS = {
+        "Realism": ("prithivMLmods/Canopus-Realism-LoRA", "Canopus-Realism-LoRA.safetensors", "rlms"),
+        "Pixar": ("prithivMLmods/Canopus-Pixar-Art", "Canopus-Pixar-Art.safetensors", "pixar"),
+        "Photoshoot": ("prithivMLmods/Canopus-Photo-Shoot-Mini-LoRA", "Canopus-Photo-Shoot-Mini-LoRA.safetensors", "photo"),
+        "Clothing": ("prithivMLmods/Canopus-Clothing-Adp-LoRA", "Canopus-Dress-Clothing-LoRA.safetensors", "clth"),
+        "Interior": ("prithivMLmods/Canopus-Interior-Architecture-0.1", "Canopus-Interior-Architecture-0.1δ.safetensors", "arch"),
+        "Fashion": ("prithivMLmods/Canopus-Fashion-Product-Dilation", "Canopus-Fashion-Product-Dilation.safetensors", "fashion"),
+        "Minimalistic": ("prithivMLmods/Pegasi-Minimalist-Image-Style", "Pegasi-Minimalist-Image-Style.safetensors", "minimalist"),
+        "Modern": ("prithivMLmods/Canopus-Modern-Clothing-Design", "Canopus-Modern-Clothing-Design.safetensors", "mdrnclth"),
+        "Animaliea": ("prithivMLmods/Canopus-Animaliea-Artism", "Canopus-Animaliea-Artism.safetensors", "Animaliea"),
+        "Wallpaper": ("prithivMLmods/Canopus-Liquid-Wallpaper-Art", "Canopus-Liquid-Wallpaper-Minimalize-LoRA.safetensors", "liquid"),
+        "Cars": ("prithivMLmods/Canes-Cars-Model-LoRA", "Canes-Cars-Model-LoRA.safetensors", "car"),
+        "PencilArt": ("prithivMLmods/Canopus-Pencil-Art-LoRA", "Canopus-Pencil-Art-LoRA.safetensors", "Pencil Art"),
+        "ArtMinimalistic": ("prithivMLmods/Canopus-Art-Medium-LoRA", "Canopus-Art-Medium-LoRA.safetensors", "mdm"),
+    }
+
+    # Load all LoRA weights
+    for model_name, weight_name, adapter_name in LORA_OPTIONS.values():
+        pipe.load_lora_weights(model_name, weight_name=weight_name, adapter_name=adapter_name)
+    pipe.to("cuda")
+else:
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        "SG161222/RealVisXL_V4.0_Lightning",
+        torch_dtype=torch.float32,
+        use_safetensors=True,
+    ).to(device)
+
+def save_image(img: Image.Image) -> str:
+    """Save a PIL image with a unique filename and return the path."""
     unique_name = str(uuid.uuid4()) + ".png"
     img.save(unique_name)
     return unique_name
@@ -19,267 +170,199 @@ def randomize_seed_fn(seed: int, randomize_seed: bool) -> int:
         seed = random.randint(0, MAX_SEED)
     return seed
 
-MAX_SEED = np.iinfo(np.int32).max
-USE_TORCH_COMPILE = 0
-ENABLE_CPU_OFFLOAD = 0
-
-if torch.cuda.is_available():
-    pipe = StableDiffusionXLPipeline.from_pretrained(
-        "SG161222/RealVisXL_V4.0_Lightning",
-        torch_dtype=torch.float16,
-        use_safetensors=True,
-    )
-    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
-
-    LORA_OPTIONS = {
-        "Realism (face/character)👦🏻": ("prithivMLmods/Canopus-Realism-LoRA", "Canopus-Realism-LoRA.safetensors", "rlms"),
-        "Pixar (art/toons)🙀": ("prithivMLmods/Canopus-Pixar-Art", "Canopus-Pixar-Art.safetensors", "pixar"),
-        "Photoshoot (camera/film)📸": ("prithivMLmods/Canopus-Photo-Shoot-Mini-LoRA", "Canopus-Photo-Shoot-Mini-LoRA.safetensors", "photo"),
-        "Clothing (hoodies/pant/shirts)👔": ("prithivMLmods/Canopus-Clothing-Adp-LoRA", "Canopus-Dress-Clothing-LoRA.safetensors", "clth"),
-        "Interior Architecture (house/hotel)🏠": ("prithivMLmods/Canopus-Interior-Architecture-0.1", "Canopus-Interior-Architecture-0.1δ.safetensors", "arch"),
-        "Fashion Product (wearing/usable)👜": ("prithivMLmods/Canopus-Fashion-Product-Dilation", "Canopus-Fashion-Product-Dilation.safetensors", "fashion"),
-        "Minimalistic Image (minimal/detailed)🏞️": ("prithivMLmods/Pegasi-Minimalist-Image-Style", "Pegasi-Minimalist-Image-Style.safetensors", "minimalist"),
-        "Modern Clothing (trend/new)👕": ("prithivMLmods/Canopus-Modern-Clothing-Design", "Canopus-Modern-Clothing-Design.safetensors", "mdrnclth"),
-        "Animaliea (farm/wild)🫎": ("prithivMLmods/Canopus-Animaliea-Artism", "Canopus-Animaliea-Artism.safetensors", "Animaliea"),
-        "Liquid Wallpaper (minimal/illustration)🖼️": ("prithivMLmods/Canopus-Liquid-Wallpaper-Art", "Canopus-Liquid-Wallpaper-Minimalize-LoRA.safetensors", "liquid"),
-        "Canes Cars (realistic/futurecars)🚘": ("prithivMLmods/Canes-Cars-Model-LoRA", "Canes-Cars-Model-LoRA.safetensors", "car"),
-        "Pencil Art (characteristic/creative)✏️": ("prithivMLmods/Canopus-Pencil-Art-LoRA", "Canopus-Pencil-Art-LoRA.safetensors", "Pencil Art"),
-        "Art Minimalistic (paint/semireal)🎨": ("prithivMLmods/Canopus-Art-Medium-LoRA", "Canopus-Art-Medium-LoRA.safetensors", "mdm"),
-
-    }
-
-    for model_name, weight_name, adapter_name in LORA_OPTIONS.values():
-        pipe.load_lora_weights(model_name, weight_name=weight_name, adapter_name=adapter_name)
-    pipe.to("cuda")
-
-style_list = [
-    {
-        "name": "3840 x 2160",
-        "prompt": "hyper-realistic 8K image of {prompt}. ultra-detailed, lifelike, high-resolution, sharp, vibrant colors, photorealistic",
-        "negative_prompt": "cartoonish, low resolution, blurry, simplistic, abstract, deformed, ugly",
-    },
-    {
-        "name": "2560 x 1440",
-        "prompt": "hyper-realistic 4K image of {prompt}. ultra-detailed, lifelike, high-resolution, sharp, vibrant colors, photorealistic",
-        "negative_prompt": "cartoonish, low resolution, blurry, simplistic, abstract, deformed, ugly",
-    },
-    {
-        "name": "HD+",
-        "prompt": "hyper-realistic 2K image of {prompt}. ultra-detailed, lifelike, high-resolution, sharp, vibrant colors, photorealistic",
-        "negative_prompt": "cartoonish, low resolution, blurry, simplistic, abstract, deformed, ugly",
-    },
-    {
-        "name": "Style Zero",
-        "prompt": "{prompt}",
-        "negative_prompt": "",
-    },
-]
-
-styles = {k["name"]: (k["prompt"], k["negative_prompt"]) for k in style_list}
-
-DEFAULT_STYLE_NAME = "3840 x 2160"
-STYLE_NAMES = list(styles.keys())
-
-def apply_style(style_name: str, positive: str, negative: str = "") -> Tuple[str, str]:
-    if style_name in styles:
-        p, n = styles.get(style_name, styles[DEFAULT_STYLE_NAME])
-    else:
-        p, n = styles[DEFAULT_STYLE_NAME]
-
-    if not negative:
-        negative = ""
-    return p.replace("{prompt}", positive), n + negative
-
 @spaces.GPU(duration=180, enable_queue=True)
-def generate(
+def generate_image(
     prompt: str,
     negative_prompt: str = "",
-    use_negative_prompt: bool = False,
     seed: int = 0,
     width: int = 1024,
     height: int = 1024,
-    guidance_scale: float = 3,
-    randomize_seed: bool = False,
-    style_name: str = DEFAULT_STYLE_NAME,
-    lora_model: str = "Realism (face/character)👦🏻",
+    guidance_scale: float = 3.0,
+    randomize_seed: bool = True,
+    lora_model: str = "Realism",
     progress=gr.Progress(track_tqdm=True),
 ):
     seed = int(randomize_seed_fn(seed, randomize_seed))
-
-    positive_prompt, effective_negative_prompt = apply_style(style_name, prompt, negative_prompt)
-    
-    if not use_negative_prompt:
-        effective_negative_prompt = ""  # type: ignore
-
+    effective_negative_prompt = negative_prompt  # Use provided negative prompt if any
     model_name, weight_name, adapter_name = LORA_OPTIONS[lora_model]
     pipe.set_adapters(adapter_name)
-
-    images = pipe(
-        prompt=positive_prompt,
-        negative_prompt=effective_negative_prompt,
-        width=width,
-        height=height,
-        guidance_scale=guidance_scale,
-        num_inference_steps=20,
-        num_images_per_prompt=1,
-        cross_attention_kwargs={"scale": 0.65},
-        output_type="pil",
-    ).images
+    outputs = pipe(
+         prompt=prompt,
+         negative_prompt=effective_negative_prompt,
+         width=width,
+         height=height,
+         guidance_scale=guidance_scale,
+         num_inference_steps=28,
+         num_images_per_prompt=1,
+         cross_attention_kwargs={"scale": 0.65},
+         output_type="pil",
+    )
+    images = outputs.images
     image_paths = [save_image(img) for img in images]
     return image_paths, seed
 
-examples = [
-    "realism, man in the style of dark beige and brown, uhd image, youthful protagonists, nonrepresentational",
-    "pixar, a young man with light brown wavy hair and light brown eyes sitting in an armchair and looking directly at the camera, pixar style, disney pixar, office background",
-    "hoodie, front view, capture a urban style, superman hoodie, technical materials, fabric small point label on text blue theory, with a raised collar, fabric is a light yellow, low angle to capture the hoodies form and detailing, f/5.6 to focus on the hoodies craftsmanship, solid grey background, studio light setting, with batman logo.",
-]
-
-
-css = '''
-.gradio-container{max-width: 888px !important}
-h1{text-align:center}
-.submit-btn {
-    background-color: #ecde2c  !important;
-    color: white !important;
-}
-.submit-btn:hover {
-    background-color: #ffec00  !important;
-}
-'''
-
-def load_predefined_images():
-    predefined_images = [
-        "assets/1.png",
-        "assets/2.png",
-        "assets/3.png",
-        "assets/4.png",
-        "assets/5.png",
-        "assets/6.png",
-        "assets/7.png",
-        "assets/8.png",
-        "assets/9.png",
-    ]
-    return predefined_images
-
-with gr.Blocks(css=css, theme="bethecloud/storj_theme") as demo:
-    with gr.Row():
-        with gr.Column(scale=1):
-            prompt = gr.Text(
-                label="Prompt",
-                show_label=False,
-                max_lines=1,
-                placeholder="Enter your prompt with resp. tag!",
-                container=False,
+# -----------------------
+# Main Chat/Generation Function
+# -----------------------
+@spaces.GPU
+def generate(
+    input_dict: dict,
+    chat_history: list[dict],
+    max_new_tokens: int = 1024,
+    temperature: float = 0.6,
+    top_p: float = 0.9,
+    top_k: int = 50,
+    repetition_penalty: float = 1.2,
+):
+    """
+    Generates chatbot responses with support for multimodal input, TTS, and image generation.
+    Special commands:
+      - "@tts1" or "@tts2": triggers text-to-speech.
+      - "@<lora_command>": triggers image generation using the new LoRA pipeline.
+         Available commands (case-insensitive): @realism, @pixar, @photoshoot, @clothing, @interior, @fashion, 
+         @minimalistic, @modern, @animaliea, @wallpaper, @cars, @pencilart, @artminimalistic.
+    """
+    text = input_dict["text"]
+    files = input_dict.get("files", [])
+    
+    # Check for image generation command based on LoRA tags.
+    lora_mapping = { key.lower(): key for key in LORA_OPTIONS }
+    for key_lower, key in lora_mapping.items():
+        command_tag = "@" + key_lower
+        if text.strip().lower().startswith(command_tag):
+            prompt_text = text.strip()[len(command_tag):].strip()
+            yield progress_bar_html(f"Processing Image Generation ({key} style)")
+            image_paths, used_seed = generate_image(
+                prompt=prompt_text,
+                negative_prompt="",
+                seed=1,
+                width=1024,
+                height=1024,
+                guidance_scale=3,
+                randomize_seed=True,
+                lora_model=key,
             )
-            run_button = gr.Button("Generate  as  (1024 x 1024)🎃", scale=0, elem_classes="submit-btn")
+            yield progress_bar_html("Finalizing Image Generation")
+            yield gr.Image(image_paths[0])
+            return 
+    
+    # Check for TTS command (@tts1 or @tts2)
+    tts_prefix = "@tts"
+    is_tts = any(text.strip().lower().startswith(f"{tts_prefix}{i}") for i in range(1, 3))
+    voice_index = next((i for i in range(1, 3) if text.strip().lower().startswith(f"{tts_prefix}{i}")), None)
+    
+    if is_tts and voice_index:
+        voice = TTS_VOICES[voice_index - 1]
+        text = text.replace(f"{tts_prefix}{voice_index}", "").strip()
+        conversation = [{"role": "user", "content": text}]
+    else:
+        voice = None
+        text = text.replace(tts_prefix, "").strip()
+        conversation = clean_chat_history(chat_history)
+        conversation.append({"role": "user", "content": text})
+    
+    if files:
+        if len(files) > 1:
+            images = [load_image(image) for image in files]
+        elif len(files) == 1:
+            images = [load_image(files[0])]
+        else:
+            images = []
+        messages = [{
+            "role": "user",
+            "content": [
+                *[{"type": "image", "image": image} for image in images],
+                {"type": "text", "text": text},
+            ]
+        }]
+        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[prompt], images=images, return_tensors="pt", padding=True).to("cuda")
+        streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
+        generation_kwargs = {**inputs, "streamer": streamer, "max_new_tokens": max_new_tokens}
+        thread = Thread(target=model_m.generate, kwargs=generation_kwargs)
+        thread.start()
 
-            with gr.Row(visible=True):
-                model_choice = gr.Dropdown(
-                    label="LoRA Selection",
-                    choices=list(LORA_OPTIONS.keys()),
-                    value="Realism (face/character)👦🏻")
-            
-            with gr.Accordion("Advanced options", open=True):
-                use_negative_prompt = gr.Checkbox(label="Use negative prompt", value=True, visible=True)
-                negative_prompt = gr.Text(
-                    label="Negative prompt",
-                    lines=4,
-                    max_lines=6,
-                    value="(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation",
-                    placeholder="Enter a negative prompt",
-                    visible=True,
-                )
-                with gr.Row():
-                    seed = gr.Slider(
-                        label="Seed",
-                        minimum=0,
-                        maximum=MAX_SEED,
-                        step=1,
-                        value=0,
-                        visible=True
-                    )
-                    randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
+        buffer = ""
+        yield progress_bar_html("Processing with Qwen2VL Ocr")
+        for new_text in streamer:
+            buffer += new_text
+            buffer = buffer.replace("<|im_end|>", "")
+            time.sleep(0.01)
+            yield buffer
+    else:
+        input_ids = tokenizer.apply_chat_template(conversation, add_generation_prompt=True, return_tensors="pt")
+        if input_ids.shape[1] > MAX_INPUT_TOKEN_LENGTH:
+            input_ids = input_ids[:, -MAX_INPUT_TOKEN_LENGTH:]
+            gr.Warning(f"Trimmed input from conversation as it was longer than {MAX_INPUT_TOKEN_LENGTH} tokens.")
+        input_ids = input_ids.to(model.device)
+        streamer = TextIteratorStreamer(tokenizer, timeout=20.0, skip_prompt=True, skip_special_tokens=True)
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "streamer": streamer,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "top_p": top_p,
+            "top_k": top_k,
+            "temperature": temperature,
+            "num_beams": 1,
+            "repetition_penalty": repetition_penalty,
+        }
+        t = Thread(target=model.generate, kwargs=generation_kwargs)
+        t.start()
 
-                with gr.Row(visible=True):
-                    width = gr.Slider(
-                        label="Width",
-                        minimum=512,
-                        maximum=2048,
-                        step=8,
-                        value=1024,
-                    )
-                    height = gr.Slider(
-                        label="Height",
-                        minimum=512,
-                        maximum=2048,
-                        step=8,
-                        value=1024,
-                    )
-                    
-                guidance_scale = gr.Slider(
-                    label="Guidance Scale",
-                    minimum=0.1,
-                    maximum=20.0,
-                    step=0.1,
-                    value=3.0,
-                )
+        outputs = []
+        for new_text in streamer:
+            outputs.append(new_text)
+            yield "".join(outputs)
 
-                style_selection = gr.Radio(
-                    show_label=True,
-                    container=True,
-                    interactive=True,
-                    choices=STYLE_NAMES,
-                    value=DEFAULT_STYLE_NAME,
-                    label="Quality Style",
-                )
+        final_response = "".join(outputs)
+        yield final_response
 
-        with gr.Column(scale=2):
-            result = gr.Gallery(label="Result", columns=1, preview=True, show_label=False)
+        if is_tts and voice:
+            output_file = asyncio.run(text_to_speech(final_response, voice))
+            yield gr.Audio(output_file, autoplay=True)
 
-            gr.Examples(
-                examples=examples,
-                inputs=prompt,
-                outputs=[result, seed],
-                fn=generate,
-                cache_examples=False,
-            )
-            
-            predefined_gallery = gr.Gallery(
-                label="Image Gallery",
-                columns=3,
-                show_label=False,
-                value=load_predefined_images()
-            )
-
-        use_negative_prompt.change(
-            fn=lambda x: gr.update(visible=x),
-            inputs=use_negative_prompt,
-            outputs=negative_prompt,
-            api_name=False,
-        )
-
-    gr.on(
-        triggers=[
-            prompt.submit,
-            negative_prompt.submit,
-            run_button.click,
-        ],
-        fn=generate,
-        inputs=[
-            prompt,
-            negative_prompt,
-            use_negative_prompt,
-            seed,
-            width,
-            height,
-            guidance_scale,
-            randomize_seed,
-            style_selection,
-            model_choice,
-        ],
-        outputs=[result, seed],
-        api_name="run",
-    )
+# -----------------------
+# Gradio Chat Interface
+# -----------------------
+demo = gr.ChatInterface(
+    fn=generate,
+    additional_inputs=[
+        gr.Slider(label="Max new tokens", minimum=1, maximum=MAX_MAX_NEW_TOKENS, step=1, value=DEFAULT_MAX_NEW_TOKENS),
+        gr.Slider(label="Temperature", minimum=0.1, maximum=4.0, step=0.1, value=0.6),
+        gr.Slider(label="Top-p (nucleus sampling)", minimum=0.05, maximum=1.0, step=0.05, value=0.9),
+        gr.Slider(label="Top-k", minimum=1, maximum=1000, step=1, value=50),
+        gr.Slider(label="Repetition penalty", minimum=1.0, maximum=2.0, step=0.05, value=1.2),
+    ],
+    examples=[
+        ['@realism Chocolate dripping from a donut against a yellow background, in the style of brocore, hyper-realistic'],
+        ["@pixar A young man with light brown wavy hair and light brown eyes sitting in an armchair and looking directly at the camera, pixar style, disney pixar, office background, ultra detailed, 1 man"],
+        ["@realism A futuristic cityscape with neon lights"],
+        ["@photoshoot A portrait of a person with dramatic lighting"],
+        [{"text": "summarize the letter", "files": ["examples/1.png"]}],
+        ["Python Program for Array Rotation"],
+        ["@tts1 Who is Nikola Tesla, and why did he die?"],
+        ["@clothing Fashionable streetwear in an urban environment"],
+        ["@interior A modern living room interior with minimalist design"],
+        ["@fashion A runway model in haute couture"],
+        ["@minimalistic A simple and elegant design of a serene landscape"],
+        ["@modern A contemporary art piece with abstract geometric shapes"],
+        ["@animaliea A cute animal portrait with vibrant colors"],
+        ["@wallpaper A scenic mountain range perfect for a desktop wallpaper"],
+        ["@cars A sleek sports car cruising on a city street"],
+        ["@pencilart A detailed pencil sketch of a historic building"],
+        ["@artminimalistic An artistic minimalist composition with subtle tones"],
+        ["@tts2 What causes rainbows to form?"],
+    ],
+    cache_examples=False,
+    type="messages",
+    description=DESCRIPTION,
+    css=css,
+    fill_height=True,
+    textbox=gr.MultimodalTextbox(label="Query Input", file_types=["image"], file_count="multiple", placeholder="default [text, vision] , scroll down examples to explore more art styles"),
+    stop_btn="Stop Generation",
+    multimodal=True,
+)
 
 if __name__ == "__main__":
-    demo.queue(max_size=30).launch()
+    demo.queue(max_size=20).launch(share=True)
